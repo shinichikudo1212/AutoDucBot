@@ -1,0 +1,3 @@
+# AutoDucBot
+
+Require phantomjs.
