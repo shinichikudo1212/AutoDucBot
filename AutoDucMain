@@ -4,7 +4,7 @@ using System.Threading;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Remote;
 using OpenQA.Selenium.PhantomJS;
-using OpenQA.Selenium.Firefox;
+using OpenQA.Selenium.Support.UI;
 
 namespace SeleniumAutoDuc
 {
@@ -12,10 +12,20 @@ namespace SeleniumAutoDuc
     {
         static void Main(string[] args)
         {
-            AutoDucBot adb = new AutoDucBot();
-            adb.InitWorkingThreads();      
-            // Won't go to this 
-            Console.ReadLine();
+            // Input
+            InfoHolder.PhantomJSPrompt();
+            InfoHolder.LoginPrompt();
+
+            // Init
+            Cacher cacher = new Cacher(InfoHolder.PathToPhantomJS);
+            Poster poster = new Poster(InfoHolder.PathToPhantomJS);
+
+            // Start 2 threads
+            Thread cacher_thread = new Thread(() => cacher.Start());
+            Thread poster_thread = new Thread(() => poster.Start());
+
+            cacher_thread.Start();
+            poster_thread.Start();
         }
 
         public struct threadInfo
@@ -25,42 +35,16 @@ namespace SeleniumAutoDuc
             public string firstPostContent;
         }
 
-        class AutoDucBot
+        public abstract class VozSurfer
         {
-            private IWebDriver poster_driver;
-            private IWebDriver cacher_driver;
-            private string userName;
-            private string password;
-            private AutoResetEvent cacherRecentlyCaches;
-            private AutoResetEvent posterPostingFinishes;
-            private Queue<threadInfo> threadInfos;
-            private Queue<threadInfo> quotedThreadInfos;
+            protected string driver_name;
+            protected IWebDriver driver;
+            protected WebDriverWait waitForLoad;
 
-            public AutoDucBot()
-            {
-                //Init Driver and No command line interface 
-                //The console is now printing language-binding messages.
-                // firefox testing
-
-                System.Environment.SetEnvironmentVariable("webdriver.gecko.driver", "C:\\Users\\Win8\\Desktop\\EclipseWorkspace\\geckodriver.exe");
-                //PhantomJSDriverService noCLI = PhantomJSDriverService.CreateDefaultService("C:\\Users\\Win8\\Desktop\\phantomjs-2.1.1-windows\\phantomjs-2.1.1-windows\\bin");
-                //noCLI.HideCommandPromptWindow = true;
-                cacher_driver = new FirefoxDriver();
-                poster_driver = new FirefoxDriver();
-
-                //Init basic info
-                userName = "yourusername";
-                password = "yourpassword";
-                threadInfos = new Queue<threadInfo>();
-                quotedThreadInfos = new Queue<threadInfo>();
-                cacherRecentlyCaches = new AutoResetEvent(false);
-                posterPostingFinishes = new AutoResetEvent(false);
-            }
-
-            public void Login(IWebDriver driver, string driverName)
+            public virtual void Login(string userName, string password)
             {
                 // Vbulletin allows login from multiple sources
-                
+
                 driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
 
                 // UName & Password
@@ -76,28 +60,56 @@ namespace SeleniumAutoDuc
                 submitButton_Elmt.Submit();
 
                 // Wait 10s for login redirection ( depends on connection )
-                Thread.Sleep(10000);
+                Thread.Sleep(7000);
 
-                // Assuming you're not banned 
-                Console.WriteLine("{0}: {1}. Login successful!", DateTime.Now, driverName);
+                // Still not redirected: either you're banned or your internet connection fails
+                if (driver.Url != "https://vozforums.com/forumdisplay.php?f=17")
+                {
+                    Console.Write("{0}: ", DateTime.Now);
+
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("{0}: Login failed, wrong Username & Password or you're banned.", driver_name);
+                    Console.ResetColor();
+                }
+                else
+                {
+                    Console.Write("{0}: ", DateTime.Now);
+
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.WriteLine("{0}: Login successful!", driver_name);
+                    Console.ResetColor();
+                }
+
             }
-            public void InitWorkingThreads()
+            public virtual void Stop()
             {
-                Thread cacher_thread = new Thread(new ThreadStart(CacheNewThread));
-                Thread poster_thread = new Thread(new ThreadStart(PostQueuedMessages));
+                driver.Close();
+            }
+        }
 
-                cacher_thread.Start();
-                poster_thread.Start();
+        public class Cacher : VozSurfer
+        {
+            public Cacher(string PathToPhantomJS)
+            {
+                driver_name = "Cacher";
+                PhantomJSDriverService noCLI = PhantomJSDriverService.CreateDefaultService(PathToPhantomJS);
+                noCLI.HideCommandPromptWindow = true;
+                driver = new PhantomJSDriver(noCLI);
             }
 
-            public void CacheNewThread()
+            public void Start()
             {
-                Login(cacher_driver, "Cacher");
+                Login(InfoHolder.userName, InfoHolder.password);
+                CacheNewThread(ref InfoHolder.threadInfos, ref InfoHolder.quotedThreadInfos);
+            }
+
+            public void CacheNewThread(ref Queue<threadInfo> threadInfos, ref Queue<threadInfo> quotedThreadInfos)
+            {
                 while (true)
                 {
                     // Refresh f17
-                    Console.WriteLine("{0}: Refresh f17 for new threads.", DateTime.Now);
-                    cacher_driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
+                    driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
+                    Console.WriteLine("{0}: Refresh F17 for new threads.", DateTime.Now);
 
                     // Search for new threads
                     for (int i = 9; i <= 28; i++)
@@ -111,24 +123,32 @@ namespace SeleniumAutoDuc
 
                             // Number of replies is in the right of title
                             // Status icon is in the left of title
-                            string repliesNum = cacher_driver.FindElement(By.XPath(tr_XPath + "/td[4]/a")).Text;
-                            string statusicon = cacher_driver.FindElement(By.XPath(tr_XPath + "/td[1]/img")).GetAttribute("src");
+                            string repliesNum = driver.FindElement(By.XPath(tr_XPath + "/td[4]/a")).Text;
+                            string statusicon = driver.FindElement(By.XPath(tr_XPath + "/td[1]/img")).GetAttribute("src");
 
+                            // Must check both <IsAlreadyQuoted status icon> and <quotedQueue>
+                            // because maybe in the last working session, the bot already posted in this thread
+                            // but when we turn off, quotedQueue is disposed.
                             if (IsLowPostCount(repliesNum) && IsAlreadyQuoted(statusicon))
                             {
                                 // Go to thread
-                                string threadID = ExtractThreadID(tr_XPath + "/td[1]");
+                                // wait for threadID element to load
+                                string threadIDTag_XPath = tr_XPath + "/td[1]";
+
+                                string threadID = ExtractThreadID(threadIDTag_XPath);
                                 string showThread_url = "https://vozforums.com/showthread.php?t=" + threadID;
-                                cacher_driver.Navigate().GoToUrl(showThread_url);
+                                driver.Navigate().GoToUrl(showThread_url);
 
                                 // Get ID from thread
                                 string firstPostID_XPath = "//*[@id='posts']/div[1]/div/div" + "/div";
+
                                 string firstPostID = ExtractFirstPostID(firstPostID_XPath);
 
                                 // Go to quoting reply page
                                 string doNewReply = "https://vozforums.com/newreply.php?do=newreply&p=" + firstPostID;
-                                cacher_driver.Navigate().GoToUrl(doNewReply);
+                                driver.Navigate().GoToUrl(doNewReply);
                                 string firstPostContent_XPath = "//*[@id='vB_Editor_001_textarea']";
+
                                 string firstPostContent = ExtractFirstPostContent(firstPostContent_XPath);
 
                                 // Enqueue ID and content for later reply
@@ -137,104 +157,31 @@ namespace SeleniumAutoDuc
                                 threadInfo.firstPostID = firstPostID;
                                 threadInfo.firstPostContent = firstPostContent;
 
-                                // Only enqueue if not in queue
-                                if (!threadInfos.Contains(threadInfo) && !quotedThreadInfos.Contains(threadInfo))
+                                // Only enqueue if not in queue and not in already posted
+                                lock (InfoHolder.locker)
                                 {
-                                    threadInfos.Enqueue(threadInfo);
+                                    if (!threadInfos.Contains(threadInfo) && !quotedThreadInfos.Contains(threadInfo))
+                                    {
+                                        threadInfos.Enqueue(threadInfo);
+                                    }
                                 }
 
-                                // We found a new thread and the bot already went there
-                                // break this <for loop> to refresh f17 and calculate from 9 - 28 again
+                                // We found a new thread and cacher is now in that thread
+                                // break this <for loop> to return to f17 and calculate from 9 - 28 again
                                 break;
                             }
                         }
                         catch (OpenQA.Selenium.NoSuchElementException)
                         {
-                            // Happens when the bot goes to a thread that was just deleted
-                            // so it only sees "Invalid thread specified"
-                            Console.Write("{0}: ", DateTime.Now);
-
                             Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine("Cacher: Unable to load thread, possibly deleted.");
+                            Console.WriteLine("{0}: Cacher: Unable to load thread, possibly deleted.", DateTime.Now);
                             Console.ResetColor();
                         }
-                        finally
-                        {
-                            // Already scanned through 20 threads of f17
-                            // 5s before refreshing again
-                            if (i == 28)
-                            {
-                                Thread.Sleep(5000);
-                            }
-                        }
+                        Thread.Sleep(5000);
                     }
-                    cacherRecentlyCaches.Set();
-                }
-            }
-            public void PostQueuedMessages()
-            {
-                Login(poster_driver, "Poster");
-                while (true)
-                {
-                    while (threadInfos.Count != 0)
-                    {
-                        try
-                        {
-                            // Go to posting page of a thread in the queue
-                            threadInfo threadInfo = threadInfos.Dequeue();
-                            quotedThreadInfos.Enqueue(threadInfo);
-
-                            poster_driver.Navigate().GoToUrl("https://vozforums.com/newreply.php?do=newreply&p=" + threadInfo.firstPostID);
-
-                            // Erase first post quote ( possibly edited by user )
-                            // Add the cached first post quote
-                            IWebElement messageForm_Elmt = poster_driver.FindElement(By.XPath("//*[@id='vB_Editor_001_textarea']"));
-                            messageForm_Elmt.Clear();
-                            messageForm_Elmt.SendKeys(threadInfo.firstPostContent);
-                            messageForm_Elmt.SendKeys(randomMessage());
-                            IWebElement submitButton_Elmt = poster_driver.FindElement(By.XPath("//*[@id='vB_Editor_001_save']"));
-                            submitButton_Elmt.Submit();
-
-                            //Report
-                            Console.Write("{0}: ", DateTime.Now);
-
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine("Successfully quoted thread: {0}. Waiting 30s...", threadInfo.threadID);
-                            Console.ResetColor();
-                        }
-                        catch (OpenQA.Selenium.NoSuchElementException)
-                        {
-                            // Happens when the bot tries to post in a thread that was just deleted
-                            // so it only sees "Invalid thread specified"
-                            Console.Write("{0}: ", DateTime.Now);
-
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine("Poster: Unable to load thread, possibly deleted.");
-                            Console.ResetColor();
-                        }
-                        finally
-                        {
-                            // 30 seconds between posts
-                            Thread.Sleep(30000);
-                        }
-                    }
-                    cacherRecentlyCaches.WaitOne();
                 }
             }
 
-            public string randomMessage()
-            {
-                string[] messageList = new String[7];
-                messageList[0] = "Đức phát nào.:byebye:";
-                messageList[1] = "Xong nhiệm vụ.:go:";
-                messageList[2] = "Không biết nói gì.:go:";
-                messageList[3] = ":sweat::sweat:";
-                messageList[4] = "Hoàn tất :byebye:";
-                messageList[5] = "Hmmm...:sweat:";
-                messageList[6] = "#sau có ý kiến gì ko ?";
-                Random rndm = new Random();
-                return messageList[rndm.Next(7)];
-            }
             public bool IsLowPostCount(string repliesNum_String)
             {
                 // Sometimes this number is X,XXX so "," must be removed before parsing to Int
@@ -258,25 +205,155 @@ namespace SeleniumAutoDuc
                     return false;
                 }
             }
+
+            // Extract specific thing from specific XPath
+            // hard-coded to vozforum
             public string ExtractThreadID(string threadIDTag_XPath)
             {
-                IWebElement threadIDTag = cacher_driver.FindElement(By.XPath(threadIDTag_XPath));
+                IWebElement threadIDTag = driver.FindElement(By.XPath(threadIDTag_XPath));
                 string threadID = threadIDTag.GetAttribute("id").Substring(20);
                 return threadID;
             }
             public string ExtractFirstPostID(string firstPostIDTag_XPath)
             {
-                IWebElement firstPostIDTag = cacher_driver.FindElement(By.XPath(firstPostIDTag_XPath));
+                IWebElement firstPostIDTag = driver.FindElement(By.XPath(firstPostIDTag_XPath));
                 string firstPostID = firstPostIDTag.GetAttribute("id").Substring(4);
                 return firstPostID;
             }
             public string ExtractFirstPostContent(string firstPostContentTag_XPath)
             {
-                IWebElement firstPostContentTag = cacher_driver.FindElement(By.XPath(firstPostContentTag_XPath));
+                IWebElement firstPostContentTag = driver.FindElement(By.XPath(firstPostContentTag_XPath));
                 string firstPostContent = firstPostContentTag.Text;
                 return firstPostContent;
             }
-            
+        }
+
+        public class Poster : VozSurfer
+        {
+            private bool justQuoted = false;
+
+            public Poster(string PathToPhantomJS)
+            {
+                driver_name = "Poster";
+                PhantomJSDriverService noCLI = PhantomJSDriverService.CreateDefaultService(PathToPhantomJS);
+                noCLI.HideCommandPromptWindow = true;
+                driver = new PhantomJSDriver(noCLI);
+            }
+
+            public void Start()
+            {
+                Login(InfoHolder.userName, InfoHolder.password);
+                PostQueuedMessages(ref InfoHolder.threadInfos, ref InfoHolder.quotedThreadInfos);
+            }
+
+            public void PostQueuedMessages(ref Queue<threadInfo> threadInfos, ref Queue<threadInfo> quotedThreadInfos)
+            {
+                while (true)
+                {
+                    while (threadInfos.Count != 0)
+                    {
+                        // Go to posting page of a thread in the queue
+                        lock (InfoHolder.locker)
+                        {
+                            threadInfo threadInfo = threadInfos.Dequeue();
+                            try
+                            {
+                                driver.Navigate().GoToUrl("https://vozforums.com/newreply.php?do=newreply&p=" + threadInfo.firstPostID);
+
+                                // Erase first post quote ( possibly edited by user )
+                                // Add the cached first post quote
+                                IWebElement messageForm_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_textarea']"));
+                                messageForm_Elmt.Clear();
+                                messageForm_Elmt.SendKeys(threadInfo.firstPostContent);
+                                messageForm_Elmt.SendKeys(randomMessage());
+                                IWebElement submitButton_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_save']"));
+                                submitButton_Elmt.Submit();
+
+                                //Report
+                                Console.Write("{0}: ", DateTime.Now);
+
+                                Console.ForegroundColor = ConsoleColor.Green;
+                                Console.WriteLine("Successfully quoted thread: {0}. Waiting 30s...", threadInfo.threadID);
+                                Console.ResetColor();
+                            }
+                            catch (OpenQA.Selenium.NoSuchElementException)
+                            {
+                                // Happens when the bot tries to post in a thread that was just deleted
+                                // so it only sees "Invalid thread specified"
+                                Console.Write("{0}: ", DateTime.Now);
+
+                                Console.ForegroundColor = ConsoleColor.Red;
+                                Console.WriteLine("Poster: Unable to load thread, possibly deleted. Retry later.");
+                                Console.ResetColor();
+
+                                // Failed to post in this thread for some unknown reasons
+                                // Add back to queue
+                                threadInfos.Enqueue(threadInfo);
+                            }
+                            finally
+                            {
+                                // 30 seconds between posts
+                                // Only add to quotedThreadInfo if posted successfully
+                                // ( if failed to post, current threadInfo still remains ( handled in <catch> ))
+
+                                if (!threadInfos.Contains(threadInfo))
+                                {
+                                    quotedThreadInfos.Enqueue(threadInfo);
+                                    justQuoted = true;
+                                }
+                            }
+                        }
+                        // Out of lock and just quoted something, wait 30s
+                        if (justQuoted == true)
+                        {
+                            justQuoted = false;
+                            Thread.Sleep(30000);
+                        }
+                    }
+                }
+            }
+
+            public string randomMessage()
+            {
+                string[] messageList = new String[10];
+                messageList[0] = "Đức phát nào.:byebye:";
+                messageList[1] = "Xong nhiệm vụ.:go:";
+                messageList[2] = "Không biết nói gì.:go:";
+                messageList[3] = ":sweat::sweat:";
+                messageList[4] = "Hoàn tất :byebye:";
+                messageList[5] = "Hmmm...:sweat:";
+                messageList[6] = "#sau có ý kiến gì ko ?";
+                messageList[7] = "Mình thích thì mình đức thôi, không có gì quan trọng cả.";
+                messageList[8] = "This message has been gene...à mà thôi...:go:";
+                messageList[9] = "Tại sao ai cũng chửi, mình đang làm việc tốt mà ? :sosad:";
+                Random rndm = new Random();
+                return messageList[rndm.Next(10)];
+            }
+        }
+
+        public static class InfoHolder
+        {
+            public static string userName;
+            public static string password;
+            public static string PathToPhantomJS;
+            public static Queue<threadInfo> threadInfos = new Queue<threadInfo>();
+            public static Queue<threadInfo> quotedThreadInfos = new Queue<threadInfo>();
+            public static Object locker = new Object();
+            public static void PhantomJSPrompt()
+            {
+                Console.WriteLine("Enter the path to the folder that contains phantomjs.exe: ");
+                PathToPhantomJS = Console.ReadLine();
+                PathToPhantomJS = PathToPhantomJS.Replace("\\", "\\");
+            }
+
+            public static void LoginPrompt()
+            {
+                Console.Write("Username: ");
+                userName = Console.ReadLine();
+
+                Console.Write("Password: ");
+                password = Console.ReadLine();
+            }            
         }
     }
 }
