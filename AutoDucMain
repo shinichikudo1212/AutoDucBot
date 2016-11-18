@@ -2,10 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Runtime.InteropServices;
+using System.IO;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Remote;
-using OpenQA.Selenium.PhantomJS;
 using OpenQA.Selenium.Firefox;
+using OpenQA.Selenium.Interactions;
 
 namespace SeleniumAutoDuc
 {
@@ -18,14 +19,14 @@ namespace SeleniumAutoDuc
 
         static void Main(string[] args)
         {
-            InfoHolder.PhantomJSPrompt();
             InfoHolder.LoginPrompt();
             // Init
-            cacher = new Cacher(InfoHolder.PathToPhantomJS);
-            poster = new Poster(InfoHolder.PathToPhantomJS);
+            cacher = new Cacher();
+            poster = new Poster();
 
             try
             {
+                Console.Clear();
                 Init();
             }
             catch (WebDriverTimeoutException)
@@ -62,7 +63,7 @@ namespace SeleniumAutoDuc
         public abstract class VozSurfer
         {
             protected string driver_name;
-            protected IWebDriver driver;
+            protected FirefoxDriver driver;
 
             public virtual void Login(string userName, string password)
             {
@@ -117,15 +118,15 @@ namespace SeleniumAutoDuc
 
         public class Cacher : VozSurfer
         {
-            public Cacher(string PathToPhantomJS)
+            public Cacher()
             {
                 driver_name = "Cacher";
-                PhantomJSDriverService noCLI = PhantomJSDriverService.CreateDefaultService(PathToPhantomJS);
-                noCLI.HideCommandPromptWindow = true;
-                driver = new PhantomJSDriver(noCLI);
-                //System.Environment.SetEnvironmentVariable("webdriver.gecko.driver", PathToPhantomJS);
-                Console.WriteLine(driver.WindowHandles.ToString());
-                //driver = new FirefoxDriver();
+
+                FirefoxProfile profile = new FirefoxProfile();
+                profile.SetPreference("permissions.default.image", 2);
+                profile.AddExtension("noscript.xpi");
+
+                driver = new FirefoxDriver(profile);                 
             }
 
             public void Start()
@@ -195,10 +196,6 @@ namespace SeleniumAutoDuc
                                         threadInfos.Enqueue(threadInfo);
                                     }
                                 }
-
-                                // We found a new thread and cacher is now in that thread
-                                // break this <for loop> to return to f17 and calculate from 9 - 28 again
-                                break;
                             }
                         }
                         catch (OpenQA.Selenium.NoSuchElementException)
@@ -211,13 +208,13 @@ namespace SeleniumAutoDuc
                         }
                         finally
                         {
-                            // scan through all threads, wait 5s before rescanning
-                            if (i == 28)
-                            {
-                                Thread.Sleep(5000);
-                            }     
+                            // Go back twice to F17
+                            driver.Navigate().Back();
+                            driver.Navigate().Back();
                         }
                     }
+                    // Scanned 9 -> 28 already
+                    Thread.Sleep(5000);
                 }
             }
 
@@ -291,16 +288,16 @@ namespace SeleniumAutoDuc
         {
             private bool justQuoted = false;
 
-            public Poster(string PathToPhantomJS)
+            public Poster()
             {
                 // FF test
                 driver_name = "Poster";
-                //System.Environment.SetEnvironmentVariable("webdriver.gecko.driver", PathToPhantomJS);
-                PhantomJSDriverService noCLI = PhantomJSDriverService.CreateDefaultService(PathToPhantomJS);
-                noCLI.HideCommandPromptWindow = true;
-                driver = new PhantomJSDriver(noCLI);
 
-                //driver = new FirefoxDriver();
+                FirefoxProfile profile = new FirefoxProfile();
+                profile.SetPreference("permissions.default.image", 2);
+                profile.AddExtension("noscript.xpi");
+
+                driver = new FirefoxDriver(profile); 
             }
 
             public void Start()
@@ -348,10 +345,8 @@ namespace SeleniumAutoDuc
                             }
                             finally
                             {
-                                // 30 seconds between posts
                                 // Only add to quotedThreadInfo if posted successfully
                                 // ( if failed to post, current threadInfo still remains ( handled in <catch> ))
-
                                 if (!threadInfos.Contains(threadInfo))
                                 {
                                     quotedThreadInfos.Enqueue(threadInfo);
@@ -365,7 +360,7 @@ namespace SeleniumAutoDuc
                                 }
                             }
                         }
-                        // Out of lock and just quoted something, wait 30s
+                        // Out of lock and just quoted something
                         if (justQuoted == true)
                         {
                             justQuoted = false;
@@ -401,18 +396,10 @@ namespace SeleniumAutoDuc
         {
             public static string userName;
             public static string password;
-            public static string PathToPhantomJS;
             public static Queue<threadInfo> threadInfos = new Queue<threadInfo>();
             public static Queue<threadInfo> quotedThreadInfos = new Queue<threadInfo>();
             public static Object locker = new Object();
             public static bool IsWorking = true;
-
-            public static void PhantomJSPrompt()
-            {
-                Console.WriteLine("Enter the path to the folder that contains phantomjs.exe: ");
-                PathToPhantomJS = Console.ReadLine();
-                PathToPhantomJS = PathToPhantomJS.Replace("\\", "\\");
-            }
 
             public static void LoginPrompt()
             {
@@ -431,13 +418,5 @@ namespace SeleniumAutoDuc
             public string firstPostContent;
         }
 
-        public enum CtrlTypes
-        {
-            CTRL_C_EVENT = 0,
-            CTRL_BREAK_EVENT,
-            CTRL_CLOSE_EVENT,
-            CTRL_LOGOFF_EVENT = 5,
-            CTRL_SHUTDOWN_EVENT
-        }
     }
 }
