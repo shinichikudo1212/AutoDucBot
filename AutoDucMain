@@ -15,41 +15,48 @@ namespace SeleniumAutoDuc
         private static Poster poster;
         private static Thread cacher_thread;
         private static Thread poster_thread;
-        public delegate bool HandlerRoutine(CtrlTypes CtrlType);
-
-        [DllImport("Kernel32")]
-        public static extern bool SetConsoleCtrlHandler(HandlerRoutine Handler, bool Add);
 
         static void Main(string[] args)
         {
-            // Input
             InfoHolder.PhantomJSPrompt();
             InfoHolder.LoginPrompt();
-
-            Console.WriteLine("Please wait for browser to launch...");
-
             // Init
             cacher = new Cacher(InfoHolder.PathToPhantomJS);
             poster = new Poster(InfoHolder.PathToPhantomJS);
 
+            try
+            {
+                Init();
+            }
+            catch (WebDriverTimeoutException)
+            {
+                // End all working threads and start again
+                Console.Clear();
+                Dispose();
+                Init();
+            }
+        }
+
+        public static void Init()
+        {
+            // Input
+            InfoHolder.IsWorking = true;
+            Console.WriteLine("Please wait for browser to launch...");
+      
             // Start 2 threads
             cacher_thread = new Thread(() => cacher.Start());
             poster_thread = new Thread(() => poster.Start());
-
-            SetConsoleCtrlHandler(new HandlerRoutine(ConsoleCtrlCheck), true);
 
             cacher_thread.Start();
             poster_thread.Start();
         }
 
-        private static bool ConsoleCtrlCheck(CtrlTypes CtrlType)
+        public static void Dispose()
         {
-            Console.WriteLine("Exiting...");
-            // handle exit
+            InfoHolder.IsWorking = false;
+            Console.WriteLine("Browser request timed out. Restarting...");
             cacher.Stop();
             poster.Stop();
-
-            return true;
         }
 
         public abstract class VozSurfer
@@ -117,7 +124,7 @@ namespace SeleniumAutoDuc
                 noCLI.HideCommandPromptWindow = true;
                 driver = new PhantomJSDriver(noCLI);
                 //System.Environment.SetEnvironmentVariable("webdriver.gecko.driver", PathToPhantomJS);
-
+                Console.WriteLine(driver.WindowHandles.ToString());
                 //driver = new FirefoxDriver();
             }
 
@@ -129,7 +136,7 @@ namespace SeleniumAutoDuc
 
             public void CacheNewThread(ref Queue<threadInfo> threadInfos, ref Queue<threadInfo> quotedThreadInfos)
             {
-                while (true)
+                while (InfoHolder.IsWorking)
                 {
                     // Refresh f17
                     driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
@@ -304,7 +311,7 @@ namespace SeleniumAutoDuc
 
             public void PostQueuedMessages(ref Queue<threadInfo> threadInfos, ref Queue<threadInfo> quotedThreadInfos)
             {
-                while (true)
+                while (InfoHolder.IsWorking)
                 {
                     while (threadInfos.Count != 0)
                     {
@@ -398,6 +405,8 @@ namespace SeleniumAutoDuc
             public static Queue<threadInfo> threadInfos = new Queue<threadInfo>();
             public static Queue<threadInfo> quotedThreadInfos = new Queue<threadInfo>();
             public static Object locker = new Object();
+            public static bool IsWorking = true;
+
             public static void PhantomJSPrompt()
             {
                 Console.WriteLine("Enter the path to the folder that contains phantomjs.exe: ");
