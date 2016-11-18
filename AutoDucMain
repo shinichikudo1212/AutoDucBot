@@ -1,51 +1,72 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Runtime.InteropServices;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Remote;
 using OpenQA.Selenium.PhantomJS;
-using OpenQA.Selenium.Support.UI;
+using OpenQA.Selenium.Firefox;
 
 namespace SeleniumAutoDuc
 {
     class Program
     {
+        private static Cacher cacher;
+        private static Poster poster;
+        private static Thread cacher_thread;
+        private static Thread poster_thread;
+        public delegate bool HandlerRoutine(CtrlTypes CtrlType);
+
+        [DllImport("Kernel32")]
+        public static extern bool SetConsoleCtrlHandler(HandlerRoutine Handler, bool Add);
+
         static void Main(string[] args)
         {
             // Input
             InfoHolder.PhantomJSPrompt();
             InfoHolder.LoginPrompt();
 
+            Console.WriteLine("Please wait for browser to launch...");
+
             // Init
-            Cacher cacher = new Cacher(InfoHolder.PathToPhantomJS);
-            Poster poster = new Poster(InfoHolder.PathToPhantomJS);
+            cacher = new Cacher(InfoHolder.PathToPhantomJS);
+            poster = new Poster(InfoHolder.PathToPhantomJS);
 
             // Start 2 threads
-            Thread cacher_thread = new Thread(() => cacher.Start());
-            Thread poster_thread = new Thread(() => poster.Start());
+            cacher_thread = new Thread(() => cacher.Start());
+            poster_thread = new Thread(() => poster.Start());
+
+            SetConsoleCtrlHandler(new HandlerRoutine(ConsoleCtrlCheck), true);
 
             cacher_thread.Start();
             poster_thread.Start();
         }
 
-        public struct threadInfo
+        private static bool ConsoleCtrlCheck(CtrlTypes CtrlType)
         {
-            public string threadID;
-            public string firstPostID;
-            public string firstPostContent;
+            Console.WriteLine("Exiting...");
+            // handle exit
+            cacher.Stop();
+            poster.Stop();
+
+            return true;
         }
 
         public abstract class VozSurfer
         {
             protected string driver_name;
             protected IWebDriver driver;
-            protected WebDriverWait waitForLoad;
 
             public virtual void Login(string userName, string password)
             {
                 // Vbulletin allows login from multiple sources
 
                 driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
+
+                // Wait for form to load
+                // Lambda expression -> testing, no idea why this works
+                //waitForLoad = new WebDriverWait(driver, TimeSpan.FromSeconds(10));
+                //waitForLoad.Until(drv => driver.FindElement(By.XPath("//*[@id='navbar_username']")));
 
                 // UName & Password
                 // Empty UName placeholder
@@ -60,7 +81,7 @@ namespace SeleniumAutoDuc
                 submitButton_Elmt.Submit();
 
                 // Wait 10s for login redirection ( depends on connection )
-                Thread.Sleep(7000);
+                Thread.Sleep(10000);
 
                 // Still not redirected: either you're banned or your internet connection fails
                 if (driver.Url != "https://vozforums.com/forumdisplay.php?f=17")
@@ -83,7 +104,7 @@ namespace SeleniumAutoDuc
             }
             public virtual void Stop()
             {
-                driver.Close();
+                driver.Quit();
             }
         }
 
@@ -95,6 +116,9 @@ namespace SeleniumAutoDuc
                 PhantomJSDriverService noCLI = PhantomJSDriverService.CreateDefaultService(PathToPhantomJS);
                 noCLI.HideCommandPromptWindow = true;
                 driver = new PhantomJSDriver(noCLI);
+                //System.Environment.SetEnvironmentVariable("webdriver.gecko.driver", PathToPhantomJS);
+
+                //driver = new FirefoxDriver();
             }
 
             public void Start()
@@ -132,7 +156,6 @@ namespace SeleniumAutoDuc
                             if (IsLowPostCount(repliesNum) && IsAlreadyQuoted(statusicon))
                             {
                                 // Go to thread
-                                // wait for threadID element to load
                                 string threadIDTag_XPath = tr_XPath + "/td[1]";
 
                                 string threadID = ExtractThreadID(threadIDTag_XPath);
@@ -155,7 +178,7 @@ namespace SeleniumAutoDuc
                                 threadInfo threadInfo = new threadInfo();
                                 threadInfo.threadID = threadID;
                                 threadInfo.firstPostID = firstPostID;
-                                threadInfo.firstPostContent = firstPostContent;
+                                threadInfo.firstPostContent = RemoveLink_n_Img(firstPostContent);
 
                                 // Only enqueue if not in queue and not in already posted
                                 lock (InfoHolder.locker)
@@ -173,11 +196,20 @@ namespace SeleniumAutoDuc
                         }
                         catch (OpenQA.Selenium.NoSuchElementException)
                         {
+                            Console.Write("{0}: ", DateTime.Now);
+
                             Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine("{0}: Cacher: Unable to load thread, possibly deleted.", DateTime.Now);
+                            Console.WriteLine("Cacher: Unable to load thread, possibly deleted.");
                             Console.ResetColor();
                         }
-                        Thread.Sleep(5000);
+                        finally
+                        {
+                            // scan through all threads, wait 5s before rescanning
+                            if (i == 28)
+                            {
+                                Thread.Sleep(5000);
+                            }     
+                        }
                     }
                 }
             }
@@ -208,6 +240,26 @@ namespace SeleniumAutoDuc
 
             // Extract specific thing from specific XPath
             // hard-coded to vozforum
+            public string RemoveLink_n_Img(string firstPostContent)
+            {
+                // Remove [URL, [url, [/url], [/URL]
+                firstPostContent = firstPostContent.Replace("[URL","");
+                firstPostContent = firstPostContent.Replace("[url","");
+                firstPostContent = firstPostContent.Replace("[/URL]","");
+                firstPostContent = firstPostContent.Replace("[/url]","");
+
+                // Remove [IMG], [img], [/IMG], [/img]
+                firstPostContent = firstPostContent.Replace("[IMG]", "");
+                firstPostContent = firstPostContent.Replace("[img]", "");
+                firstPostContent = firstPostContent.Replace("[/IMG]", "");
+                firstPostContent = firstPostContent.Replace("[/img]", "");
+
+                // Remove http://, https://
+                firstPostContent = firstPostContent.Replace("http://", "");
+                firstPostContent = firstPostContent.Replace("https://", "");
+
+                return firstPostContent;
+            }
             public string ExtractThreadID(string threadIDTag_XPath)
             {
                 IWebElement threadIDTag = driver.FindElement(By.XPath(threadIDTag_XPath));
@@ -234,10 +286,14 @@ namespace SeleniumAutoDuc
 
             public Poster(string PathToPhantomJS)
             {
+                // FF test
                 driver_name = "Poster";
+                //System.Environment.SetEnvironmentVariable("webdriver.gecko.driver", PathToPhantomJS);
                 PhantomJSDriverService noCLI = PhantomJSDriverService.CreateDefaultService(PathToPhantomJS);
                 noCLI.HideCommandPromptWindow = true;
                 driver = new PhantomJSDriver(noCLI);
+
+                //driver = new FirefoxDriver();
             }
 
             public void Start()
@@ -268,13 +324,6 @@ namespace SeleniumAutoDuc
                                 messageForm_Elmt.SendKeys(randomMessage());
                                 IWebElement submitButton_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_save']"));
                                 submitButton_Elmt.Submit();
-
-                                //Report
-                                Console.Write("{0}: ", DateTime.Now);
-
-                                Console.ForegroundColor = ConsoleColor.Green;
-                                Console.WriteLine("Successfully quoted thread: {0}. Waiting 30s...", threadInfo.threadID);
-                                Console.ResetColor();
                             }
                             catch (OpenQA.Selenium.NoSuchElementException)
                             {
@@ -283,7 +332,7 @@ namespace SeleniumAutoDuc
                                 Console.Write("{0}: ", DateTime.Now);
 
                                 Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("Poster: Unable to load thread, possibly deleted. Retry later.");
+                                Console.WriteLine("Poster: Unable to load thread. Retry later.");
                                 Console.ResetColor();
 
                                 // Failed to post in this thread for some unknown reasons
@@ -300,6 +349,12 @@ namespace SeleniumAutoDuc
                                 {
                                     quotedThreadInfos.Enqueue(threadInfo);
                                     justQuoted = true;
+                                    //Report
+                                    Console.Write("{0}: ", DateTime.Now);
+
+                                    Console.ForegroundColor = ConsoleColor.Green;
+                                    Console.WriteLine("Successfully quoted thread: {0}. Waiting 30s...", threadInfo.threadID);
+                                    Console.ResetColor();
                                 }
                             }
                         }
@@ -310,22 +365,26 @@ namespace SeleniumAutoDuc
                             Thread.Sleep(30000);
                         }
                     }
+                    // Out of <while (count != 0)>
+                    // Only check for new threads to post every 5s
+                    // to avoid CPU consuming
+                    Thread.Sleep(5000);
                 }
             }
 
             public string randomMessage()
             {
                 string[] messageList = new String[10];
-                messageList[0] = "Đức phát nào.:byebye:";
-                messageList[1] = "Xong nhiệm vụ.:go:";
-                messageList[2] = "Không biết nói gì.:go:";
-                messageList[3] = ":sweat::sweat:";
-                messageList[4] = "Hoàn tất :byebye:";
-                messageList[5] = "Hmmm...:sweat:";
-                messageList[6] = "#sau có ý kiến gì ko ?";
-                messageList[7] = "Mình thích thì mình đức thôi, không có gì quan trọng cả.";
-                messageList[8] = "This message has been gene...à mà thôi...:go:";
-                messageList[9] = "Tại sao ai cũng chửi, mình đang làm việc tốt mà ? :sosad:";
+                messageList[0] = "Prepare... for your Đức.";
+                messageList[1] = "Your final Đức begins.";
+                messageList[2] = "You will learn what Đức truly is.";
+                messageList[3] = "This...Đức passion...compels me.";
+                messageList[4] = "I never Đức anyone. It is the program that Đức.";
+                messageList[5] = "Đức requires a certain loss of bandwidth.";
+                messageList[6] = "They call me mad. All Đức-ers are mad.";
+                messageList[7] = "I'm misunderstood. Đức can't be evil.";
+                messageList[8] = "Until they ban me, I'll keep Đức-ing.";
+                messageList[9] = "Only my Đức can make you memorable.";
                 Random rndm = new Random();
                 return messageList[rndm.Next(10)];
             }
@@ -354,6 +413,22 @@ namespace SeleniumAutoDuc
                 Console.Write("Password: ");
                 password = Console.ReadLine();
             }            
+        }
+
+        public struct threadInfo
+        {
+            public string threadID;
+            public string firstPostID;
+            public string firstPostContent;
+        }
+
+        public enum CtrlTypes
+        {
+            CTRL_C_EVENT = 0,
+            CTRL_BREAK_EVENT,
+            CTRL_CLOSE_EVENT,
+            CTRL_LOGOFF_EVENT = 5,
+            CTRL_SHUTDOWN_EVENT
         }
     }
 }
