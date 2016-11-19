@@ -1,8 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
-using System.Runtime.InteropServices;
-using System.IO;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Remote;
 using OpenQA.Selenium.Firefox;
@@ -29,7 +27,7 @@ namespace SeleniumAutoDuc
                 Console.Clear();
                 Init();
             }
-            catch (WebDriverTimeoutException)
+            catch (WebDriverException)
             {
                 // End all working threads and start again
                 Console.Clear();
@@ -67,14 +65,7 @@ namespace SeleniumAutoDuc
 
             public virtual void Login(string userName, string password)
             {
-                // Vbulletin allows login from multiple sources
-
-                driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
-
-                // Wait for form to load
-                // Lambda expression -> testing, no idea why this works
-                //waitForLoad = new WebDriverWait(driver, TimeSpan.FromSeconds(10));
-                //waitForLoad.Until(drv => driver.FindElement(By.XPath("//*[@id='navbar_username']")));
+                driver.Navigate().GoToUrl("http://vozforums.com/forumdisplay.php?f=17");
 
                 // UName & Password
                 // Empty UName placeholder
@@ -126,27 +117,35 @@ namespace SeleniumAutoDuc
                 profile.SetPreference("permissions.default.image", 2);
                 profile.AddExtension("noscript.xpi");
 
-                driver = new FirefoxDriver(profile);                 
+                driver = new FirefoxDriver(profile);
             }
 
             public void Start()
             {
+                // Close the fucking noscript ad
+                // wait for it fully loads before closing this goddamn ad
+                while (driver.WindowHandles.Count != 2) ;
+                driver.SwitchTo().Window(driver.WindowHandles[1]);
+                driver.Close();
+                driver.SwitchTo().Window(driver.WindowHandles[0]);
+
                 Login(InfoHolder.userName, InfoHolder.password);
-                CacheNewThread(ref InfoHolder.threadInfos, ref InfoHolder.quotedThreadInfos);
+                CacheNewThread(ref InfoHolder.threadInfos);
             }
 
-            public void CacheNewThread(ref Queue<threadInfo> threadInfos, ref Queue<threadInfo> quotedThreadInfos)
+            public void CacheNewThread(ref Queue<threadInfo> threadInfos)
             {
                 while (InfoHolder.IsWorking)
                 {
-                    // Refresh f17
-                    driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
-                    Console.WriteLine("{0}: Refresh F17 for new threads.", DateTime.Now);
-
-                    // Search for new threads
-                    for (int i = 9; i <= 28; i++)
+                    lock (InfoHolder.locker)
                     {
-                        try
+                        // Refresh f17
+                        driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
+                        Console.WriteLine("{0}: Refresh F17 for new threads.", DateTime.Now);
+
+                        // Search for new threads
+                        int i = InfoHolder.startingThread;
+                        while (i <= InfoHolder.endingThread)
                         {
                             // Find <tr> tags inside <tbody> of f17 ( see f17 HTML source )
                             // From 1 to 8 are forbidden threads and F17 always contains 28 thread
@@ -158,28 +157,24 @@ namespace SeleniumAutoDuc
                             string repliesNum = driver.FindElement(By.XPath(tr_XPath + "/td[4]/a")).Text;
                             string statusicon = driver.FindElement(By.XPath(tr_XPath + "/td[1]/img")).GetAttribute("src");
 
-                            // Must check both <IsAlreadyQuoted status icon> and <quotedQueue>
-                            // because maybe in the last working session, the bot already posted in this thread
-                            // but when we turn off, quotedQueue is disposed.
-                            if (IsLowPostCount(repliesNum) && IsAlreadyQuoted(statusicon))
+                            // Find threadID
+                            string threadIDTag_XPath = tr_XPath + "/td[1]";
+                            string threadID = ExtractThreadID(threadIDTag_XPath);
+
+                            if (IsLowPostCount(repliesNum) && IsAlreadyQuoted(statusicon) && !IsInQueue(threadID))
                             {
                                 // Go to thread
-                                string threadIDTag_XPath = tr_XPath + "/td[1]";
-
-                                string threadID = ExtractThreadID(threadIDTag_XPath);
                                 string showThread_url = "https://vozforums.com/showthread.php?t=" + threadID;
                                 driver.Navigate().GoToUrl(showThread_url);
 
-                                // Get ID from thread
+                                // Get first post ID from thread
                                 string firstPostID_XPath = "//*[@id='posts']/div[1]/div/div" + "/div";
-
                                 string firstPostID = ExtractFirstPostID(firstPostID_XPath);
 
                                 // Go to quoting reply page
                                 string doNewReply = "https://vozforums.com/newreply.php?do=newreply&p=" + firstPostID;
                                 driver.Navigate().GoToUrl(doNewReply);
                                 string firstPostContent_XPath = "//*[@id='vB_Editor_001_textarea']";
-
                                 string firstPostContent = ExtractFirstPostContent(firstPostContent_XPath);
 
                                 // Enqueue ID and content for later reply
@@ -188,32 +183,14 @@ namespace SeleniumAutoDuc
                                 threadInfo.firstPostID = firstPostID;
                                 threadInfo.firstPostContent = RemoveLink_n_Img(firstPostContent);
 
-                                // Only enqueue if not in queue and not in already posted
-                                lock (InfoHolder.locker)
-                                {
-                                    if (!threadInfos.Contains(threadInfo) && !quotedThreadInfos.Contains(threadInfo))
-                                    {
-                                        threadInfos.Enqueue(threadInfo);
-                                    }
-                                }
+                                threadInfos.Enqueue(threadInfo);
+                                // Back twice to f17
+                                driver.Navigate().Back();
+                                driver.Navigate().Back();
                             }
-                        }
-                        catch (OpenQA.Selenium.NoSuchElementException)
-                        {
-                            Console.Write("{0}: ", DateTime.Now);
-
-                            Console.ForegroundColor = ConsoleColor.Red;
-                            Console.WriteLine("Cacher: Unable to load thread, possibly deleted.");
-                            Console.ResetColor();
-                        }
-                        finally
-                        {
-                            // Go back twice to F17
-                            driver.Navigate().Back();
-                            driver.Navigate().Back();
-                        }
+                            i++;
+                        }  
                     }
-                    // Scanned 9 -> 28 already
                     Thread.Sleep(5000);
                 }
             }
@@ -241,6 +218,15 @@ namespace SeleniumAutoDuc
                     return false;
                 }
             }
+            public bool IsInQueue(string threadID)
+            {
+                foreach (threadInfo threadInfo in InfoHolder.threadInfos)
+                {
+                    if (threadInfo.threadID == threadID)
+                        return true;
+                }
+                return false;
+            }
 
             // Extract specific thing from specific XPath
             // hard-coded to vozforum
@@ -258,8 +244,8 @@ namespace SeleniumAutoDuc
                 firstPostContent = firstPostContent.Replace("[/IMG]", "");
                 firstPostContent = firstPostContent.Replace("[/img]", "");
 
-                // Remove http://, https://
-                firstPostContent = firstPostContent.Replace("http://", "");
+                // Remove https://, https://
+                firstPostContent = firstPostContent.Replace("https://", "");
                 firstPostContent = firstPostContent.Replace("https://", "");
 
                 return firstPostContent;
@@ -297,80 +283,67 @@ namespace SeleniumAutoDuc
                 profile.SetPreference("permissions.default.image", 2);
                 profile.AddExtension("noscript.xpi");
 
-                driver = new FirefoxDriver(profile); 
+                driver = new FirefoxDriver(profile);
             }
 
             public void Start()
             {
+                // Close the fucking noscript ad
+                // wait for it fully loads before closing this goddamn ad
+                while (driver.WindowHandles.Count != 2) ;
+                driver.SwitchTo().Window(driver.WindowHandles[1]);
+                driver.Close();
+                driver.SwitchTo().Window(driver.WindowHandles[0]);
+
                 Login(InfoHolder.userName, InfoHolder.password);
-                PostQueuedMessages(ref InfoHolder.threadInfos, ref InfoHolder.quotedThreadInfos);
+                PostQueuedMessages(ref InfoHolder.threadInfos);
             }
 
-            public void PostQueuedMessages(ref Queue<threadInfo> threadInfos, ref Queue<threadInfo> quotedThreadInfos)
+            public void PostQueuedMessages(ref Queue<threadInfo> threadInfos)
             {
                 while (InfoHolder.IsWorking)
                 {
-                    while (threadInfos.Count != 0)
+                    lock (InfoHolder.locker)
                     {
-                        // Go to posting page of a thread in the queue
-                        lock (InfoHolder.locker)
+                        if (InfoHolder.threadInfos.Count != 0)
                         {
+                            // Go to posting page of a thread in the queue
                             threadInfo threadInfo = threadInfos.Dequeue();
-                            try
-                            {
-                                driver.Navigate().GoToUrl("https://vozforums.com/newreply.php?do=newreply&p=" + threadInfo.firstPostID);
+                            driver.Navigate().GoToUrl("https://vozforums.com/newreply.php?do=newreply&p=" + threadInfo.firstPostID);
 
-                                // Erase first post quote ( possibly edited by user )
-                                // Add the cached first post quote
-                                IWebElement messageForm_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_textarea']"));
-                                messageForm_Elmt.Clear();
-                                messageForm_Elmt.SendKeys(threadInfo.firstPostContent);
-                                messageForm_Elmt.SendKeys(randomMessage());
-                                IWebElement submitButton_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_save']"));
-                                submitButton_Elmt.Submit();
-                            }
-                            catch (OpenQA.Selenium.NoSuchElementException)
-                            {
-                                // Happens when the bot tries to post in a thread that was just deleted
-                                // so it only sees "Invalid thread specified"
-                                Console.Write("{0}: ", DateTime.Now);
+                            // Erase first post quote ( possibly edited by user )
+                            // Add the cached first post quote
+                            IWebElement messageForm_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_textarea']"));
+                            messageForm_Elmt.Clear();
+                            messageForm_Elmt.SendKeys(threadInfo.firstPostContent);
+                            messageForm_Elmt.SendKeys(randomMessage());
+                            IWebElement submitButton_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_save']"));
+                            submitButton_Elmt.Submit();
 
-                                Console.ForegroundColor = ConsoleColor.Red;
-                                Console.WriteLine("Poster: Unable to load thread. Retry later.");
-                                Console.ResetColor();
+                            // Wait for posting finish
+                            // or release the lock and cacher may caches this thread again
+                            Thread.Sleep(5000);
 
-                                // Failed to post in this thread for some unknown reasons
-                                // Add back to queue
-                                threadInfos.Enqueue(threadInfo);
-                            }
-                            finally
-                            {
-                                // Only add to quotedThreadInfo if posted successfully
-                                // ( if failed to post, current threadInfo still remains ( handled in <catch> ))
-                                if (!threadInfos.Contains(threadInfo))
-                                {
-                                    quotedThreadInfos.Enqueue(threadInfo);
-                                    justQuoted = true;
-                                    //Report
-                                    Console.Write("{0}: ", DateTime.Now);
+                            //Report
+                            Console.Write("{0}: ", DateTime.Now);
 
-                                    Console.ForegroundColor = ConsoleColor.Green;
-                                    Console.WriteLine("Successfully quoted thread: {0}. Waiting 30s...", threadInfo.threadID);
-                                    Console.ResetColor();
-                                }
-                            }
-                        }
-                        // Out of lock and just quoted something
-                        if (justQuoted == true)
-                        {
-                            justQuoted = false;
-                            Thread.Sleep(30000);
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("Successfully quoted thread: {0}. Waiting 30s...", threadInfo.threadID);
+                            Console.ResetColor();
+
+                            // Just quoted, sleept
+                            justQuoted = true;
                         }
                     }
-                    // Out of <while (count != 0)>
-                    // Only check for new threads to post every 5s
-                    // to avoid CPU consuming
-                    Thread.Sleep(5000);
+                    if (justQuoted)
+                    {
+                        justQuoted = false;
+                        Thread.Sleep(30000);
+                    }
+                    else
+                    {
+                        Thread.Sleep(5000);
+                    }
                 }
             }
 
@@ -397,9 +370,10 @@ namespace SeleniumAutoDuc
             public static string userName;
             public static string password;
             public static Queue<threadInfo> threadInfos = new Queue<threadInfo>();
-            public static Queue<threadInfo> quotedThreadInfos = new Queue<threadInfo>();
             public static Object locker = new Object();
             public static bool IsWorking = true;
+            public static int startingThread = 9;
+            public static int endingThread = 28;
 
             public static void LoginPrompt()
             {
