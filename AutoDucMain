@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using System.Text;
+using System.IO;
 using OpenQA.Selenium;
 using OpenQA.Selenium.Remote;
 using OpenQA.Selenium.Firefox;
@@ -14,31 +16,32 @@ namespace SeleniumAutoDuc
         private static Poster poster;
         private static Thread cacher_thread;
         private static Thread poster_thread;
+        private static Exception Timeout60s;
 
         static void Main(string[] args)
         {
             InfoHolder.LoginPrompt();
+            InfoHolder.InitRandomMessage();
             // Init
+
+            RestartPoint:
             cacher = new Cacher();
             poster = new Poster();
 
-            try
+            Console.Clear();
+            Init();
+
+            if (Timeout60s != null)
             {
-                Console.Clear();
-                Init();
-            }
-            catch (WebDriverException)
-            {
-                // End all working threads and start again
-                Console.Clear();
                 Dispose();
-                Init();
+                goto RestartPoint;
             }
         }
 
         public static void Init()
         {
             // Input
+            Timeout60s = null;
             InfoHolder.IsWorking = true;
             Console.WriteLine("Please wait for browser to launch...");
       
@@ -128,9 +131,15 @@ namespace SeleniumAutoDuc
                 driver.SwitchTo().Window(driver.WindowHandles[1]);
                 driver.Close();
                 driver.SwitchTo().Window(driver.WindowHandles[0]);
-
-                Login(InfoHolder.userName, InfoHolder.password);
-                CacheNewThread(ref InfoHolder.threadInfos);
+                try
+                {
+                    Login(InfoHolder.userName, InfoHolder.password);
+                    CacheNewThread(ref InfoHolder.threadInfos);
+                }
+                catch (WebDriverException E)
+                {
+                    Timeout60s = E;
+                }
             }
 
             public void CacheNewThread(ref Queue<threadInfo> threadInfos)
@@ -191,7 +200,7 @@ namespace SeleniumAutoDuc
                             i++;
                         }  
                     }
-                    Thread.Sleep(5000);
+                    Thread.Sleep(10000);
                 }
             }
 
@@ -246,7 +255,7 @@ namespace SeleniumAutoDuc
 
                 // Remove https://, https://
                 firstPostContent = firstPostContent.Replace("https://", "");
-                firstPostContent = firstPostContent.Replace("https://", "");
+                firstPostContent = firstPostContent.Replace("http://", "");
 
                 return firstPostContent;
             }
@@ -294,9 +303,15 @@ namespace SeleniumAutoDuc
                 driver.SwitchTo().Window(driver.WindowHandles[1]);
                 driver.Close();
                 driver.SwitchTo().Window(driver.WindowHandles[0]);
-
-                Login(InfoHolder.userName, InfoHolder.password);
-                PostQueuedMessages(ref InfoHolder.threadInfos);
+                try
+                {
+                    Login(InfoHolder.userName, InfoHolder.password);
+                    PostQueuedMessages(ref InfoHolder.threadInfos);
+                }
+                catch(WebDriverException E)
+                {
+                    Timeout60s = E;
+                }
             }
 
             public void PostQueuedMessages(ref Queue<threadInfo> threadInfos)
@@ -349,19 +364,9 @@ namespace SeleniumAutoDuc
 
             public string randomMessage()
             {
-                string[] messageList = new String[10];
-                messageList[0] = "Prepare... for your Đức.";
-                messageList[1] = "Your final Đức begins.";
-                messageList[2] = "You will learn what Đức truly is.";
-                messageList[3] = "This...Đức passion...compels me.";
-                messageList[4] = "I never Đức anyone. It is the program that Đức.";
-                messageList[5] = "Đức requires a certain loss of bandwidth.";
-                messageList[6] = "They call me mad. All Đức-ers are mad.";
-                messageList[7] = "I'm misunderstood. Đức can't be evil.";
-                messageList[8] = "Until they ban me, I'll keep Đức-ing.";
-                messageList[9] = "Only my Đức can make you memorable.";
                 Random rndm = new Random();
-                return messageList[rndm.Next(10)];
+                int result = rndm.Next(InfoHolder.messageList.GetLength(0));
+                return InfoHolder.messageList[result];
             }
         }
 
@@ -374,6 +379,7 @@ namespace SeleniumAutoDuc
             public static bool IsWorking = true;
             public static int startingThread = 9;
             public static int endingThread = 28;
+            public static string[] messageList;
 
             public static void LoginPrompt()
             {
@@ -382,7 +388,11 @@ namespace SeleniumAutoDuc
 
                 Console.Write("Password: ");
                 password = Console.ReadLine();
-            }            
+            }
+            public static void InitRandomMessage()
+            {
+                messageList = File.ReadAllLines("message.txt", Encoding.UTF8);
+            }
         }
 
         public struct threadInfo
