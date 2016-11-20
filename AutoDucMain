@@ -357,7 +357,7 @@ namespace SeleniumAutoDuc
                     else
                     {
                         // Refresh to renew cookie
-                        driver.Navigate().GoToUrl(driver.Url);
+                        driver.Navigate().GoToUrl("http://vozforums.com/forumdisplay.php?f=17");
                         Thread.Sleep(5000);
                     }
                 }
