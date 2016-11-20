@@ -84,25 +84,6 @@ namespace SeleniumAutoDuc
 
                 // Wait 10s for login redirection ( depends on connection )
                 Thread.Sleep(10000);
-
-                // Still not redirected: either you're banned or your internet connection fails
-                if (driver.Url != "https://vozforums.com/forumdisplay.php?f=17")
-                {
-                    Console.Write("{0}: ", DateTime.Now);
-
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("{0}: Login failed, wrong Username & Password or you're banned.", driver_name);
-                    Console.ResetColor();
-                }
-                else
-                {
-                    Console.Write("{0}: ", DateTime.Now);
-
-                    Console.ForegroundColor = ConsoleColor.Green;
-                    Console.WriteLine("{0}: Login successful!", driver_name);
-                    Console.ResetColor();
-                }
-
             }
             public virtual void Stop()
             {
@@ -148,57 +129,65 @@ namespace SeleniumAutoDuc
                 {
                     lock (InfoHolder.locker)
                     {
-                        // Refresh f17
-                        driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
-                        Console.WriteLine("{0}: Refresh F17 for new threads.", DateTime.Now);
-
-                        // Search for new threads
-                        int i = InfoHolder.startingThread;
-                        while (i <= InfoHolder.endingThread)
+                        try
                         {
-                            // Find <tr> tags inside <tbody> of f17 ( see f17 HTML source )
-                            // From 1 to 8 are forbidden threads and F17 always contains 28 thread
-                            string trPattern_XPath = "//*[@id='threadbits_forum_17']/tr"; // + [x]
-                            string tr_XPath = trPattern_XPath + "[" + i + "]";
+                            #region
+                            // Refresh f17
+                            driver.Navigate().GoToUrl("https://vozforums.com/forumdisplay.php?f=17");
 
-                            // Number of replies is in the right of title
-                            // Status icon is in the left of title
-                            string repliesNum = driver.FindElement(By.XPath(tr_XPath + "/td[4]/a")).Text;
-                            string statusicon = driver.FindElement(By.XPath(tr_XPath + "/td[1]/img")).GetAttribute("src");
-
-                            // Find threadID
-                            string threadIDTag_XPath = tr_XPath + "/td[1]";
-                            string threadID = ExtractThreadID(threadIDTag_XPath);
-
-                            if (IsLowPostCount(repliesNum) && IsAlreadyQuoted(statusicon) && !IsInQueue(threadID))
+                            // Search for new threads
+                            int i = InfoHolder.startingThread;
+                            while (i <= InfoHolder.endingThread)
                             {
-                                // Go to thread
-                                string showThread_url = "https://vozforums.com/showthread.php?t=" + threadID;
-                                driver.Navigate().GoToUrl(showThread_url);
+                                // Find <tr> tags inside <tbody> of f17 ( see f17 HTML source )
+                                // From 1 to 8 are forbidden threads and F17 always contains 28 thread
+                                string trPattern_XPath = "//*[@id='threadbits_forum_17']/tr"; // + [x]
+                                string tr_XPath = trPattern_XPath + "[" + i + "]";
 
-                                // Get first post ID from thread
-                                string firstPostID_XPath = "//*[@id='posts']/div[1]/div/div" + "/div";
-                                string firstPostID = ExtractFirstPostID(firstPostID_XPath);
+                                // Number of replies is in the right of title
+                                // Status icon is in the left of title
+                                string repliesNum = driver.FindElement(By.XPath(tr_XPath + "/td[4]/a")).Text;
+                                string statusicon = driver.FindElement(By.XPath(tr_XPath + "/td[1]/img")).GetAttribute("src");
 
-                                // Go to quoting reply page
-                                string doNewReply = "https://vozforums.com/newreply.php?do=newreply&p=" + firstPostID;
-                                driver.Navigate().GoToUrl(doNewReply);
-                                string firstPostContent_XPath = "//*[@id='vB_Editor_001_textarea']";
-                                string firstPostContent = ExtractFirstPostContent(firstPostContent_XPath);
+                                // Find threadID
+                                string threadIDTag_XPath = tr_XPath + "/td[1]";
+                                string threadID = ExtractThreadID(threadIDTag_XPath);
 
-                                // Enqueue ID and content for later reply
-                                threadInfo threadInfo = new threadInfo();
-                                threadInfo.threadID = threadID;
-                                threadInfo.firstPostID = firstPostID;
-                                threadInfo.firstPostContent = RemoveLink_n_Img(firstPostContent);
+                                if (IsLowPostCount(repliesNum) && IsAlreadyQuoted(statusicon) && !IsInQueue(threadID))
+                                {
+                                    // Go to thread
+                                    string showThread_url = "https://vozforums.com/showthread.php?t=" + threadID;
+                                    driver.Navigate().GoToUrl(showThread_url);
 
-                                threadInfos.Enqueue(threadInfo);
-                                // Back twice to f17
-                                driver.Navigate().Back();
-                                driver.Navigate().Back();
+                                    // Get first post ID from thread
+                                    string firstPostID_XPath = "//*[@id='posts']/div[1]/div/div" + "/div";
+                                    string firstPostID = ExtractFirstPostID(firstPostID_XPath);
+
+                                    // Go to quoting reply page
+                                    string doNewReply = "https://vozforums.com/newreply.php?do=newreply&p=" + firstPostID;
+                                    driver.Navigate().GoToUrl(doNewReply);
+                                    string firstPostContent_XPath = "//*[@id='vB_Editor_001_textarea']";
+                                    string firstPostContent = ExtractFirstPostContent(firstPostContent_XPath);
+
+                                    // Enqueue ID and content for later reply
+                                    threadInfo threadInfo = new threadInfo();
+                                    threadInfo.threadID = threadID;
+                                    threadInfo.firstPostID = firstPostID;
+                                    threadInfo.firstPostContent = RemoveLink_n_Img(firstPostContent);
+
+                                    threadInfos.Enqueue(threadInfo);
+                                    // Back twice to f17
+                                    driver.Navigate().Back();
+                                    driver.Navigate().Back();
+                                }
+                                i++;
                             }
-                            i++;
-                        }  
+                            #endregion
+                        }
+                        catch(NoSuchElementException)
+                        {
+
+                        }
                     }
                     Thread.Sleep(10000);
                 }
@@ -320,34 +309,44 @@ namespace SeleniumAutoDuc
                 {
                     lock (InfoHolder.locker)
                     {
-                        if (InfoHolder.threadInfos.Count != 0)
+                        try
                         {
-                            // Go to posting page of a thread in the queue
-                            threadInfo threadInfo = threadInfos.Dequeue();
-                            driver.Navigate().GoToUrl("https://vozforums.com/newreply.php?do=newreply&p=" + threadInfo.firstPostID);
+                            // Queue != 0 to post
+                            #region
+                            if (InfoHolder.threadInfos.Count != 0)
+                            {
+                                // Go to posting page of a thread in the queue
+                                threadInfo threadInfo = threadInfos.Dequeue();
+                                driver.Navigate().GoToUrl("https://vozforums.com/newreply.php?do=newreply&p=" + threadInfo.firstPostID);
 
-                            // Erase first post quote ( possibly edited by user )
-                            // Add the cached first post quote
-                            IWebElement messageForm_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_textarea']"));
-                            messageForm_Elmt.Clear();
-                            messageForm_Elmt.SendKeys(threadInfo.firstPostContent);
-                            messageForm_Elmt.SendKeys(randomMessage());
-                            IWebElement submitButton_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_save']"));
-                            submitButton_Elmt.Submit();
+                                // Erase first post quote ( possibly edited by user )
+                                // Add the cached first post quote
+                                IWebElement messageForm_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_textarea']"));
+                                messageForm_Elmt.Clear();
+                                messageForm_Elmt.SendKeys(threadInfo.firstPostContent);
+                                messageForm_Elmt.SendKeys(randomMessage());
+                                IWebElement submitButton_Elmt = driver.FindElement(By.XPath("//*[@id='vB_Editor_001_save']"));
+                                submitButton_Elmt.Submit();
 
-                            // Wait for posting finish
-                            // or release the lock and cacher may caches this thread again
-                            Thread.Sleep(5000);
+                                // Wait for posting finish
+                                // or release the lock and cacher may caches this thread again
+                                Thread.Sleep(5000);
 
-                            //Report
-                            Console.Write("{0}: ", DateTime.Now);
+                                //Report
+                                Console.Write("{0}: ", DateTime.Now);
 
-                            Console.ForegroundColor = ConsoleColor.Green;
-                            Console.WriteLine("Successfully quoted thread: {0}. Waiting 30s...", threadInfo.threadID);
-                            Console.ResetColor();
+                                Console.ForegroundColor = ConsoleColor.Green;
+                                Console.WriteLine("Successfully quoted thread: {0}. Waiting 30s...", threadInfo.threadID);
+                                Console.ResetColor();
 
-                            // Just quoted, sleept
-                            justQuoted = true;
+                                // Just quoted, sleept
+                                justQuoted = true;
+                            }
+                            #endregion
+                        }
+                        catch (NoSuchElementException)
+                        {
+
                         }
                     }
                     if (justQuoted)
@@ -357,6 +356,8 @@ namespace SeleniumAutoDuc
                     }
                     else
                     {
+                        // Refresh to renew cookie
+                        driver.Navigate().GoToUrl(driver.Url);
                         Thread.Sleep(5000);
                     }
                 }
